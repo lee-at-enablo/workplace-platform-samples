@@ -15,6 +15,7 @@ const bodyParser = require('body-parser');
 const crypto = require('crypto');
 const express = require('express');
 const request = require('request');
+require('dotenv').config();
 
 const app = express();
 app.set('port', process.env.PORT || 5000);
