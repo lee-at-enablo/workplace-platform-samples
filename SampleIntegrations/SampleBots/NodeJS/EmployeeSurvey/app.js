@@ -15,6 +15,7 @@ const FINAL_SURVEY_STAGE = 'thankyou';
 const HAPPINESS_SURVEY_STAGE = 'happiness';
 const LONGEVITY_SURVEY_STAGE = 'longevity';
 const RESTART_SURVEY_PAYLOAD = 'RESTART_SURVEY';
+const GET_STARTED_PAYLOAD = 'GET_STARTED';
 
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
@@ -129,6 +130,21 @@ function finishSurveyAndStopTracking(survey) {
   sendSummaryToUser(survey);
   stopTrackingUserSurvey(survey);
 }
+
+function sendMessageToUser(userId, messageText) {
+  const messageData = {
+    recipient: {
+      id: userId,
+    },
+    message: {
+      text: messageText,
+    },
+  };
+
+  callSendAPI(messageData);
+}
+
+function sendGettingStartedMessageToUser(userId) {}
 
 function sendSummaryToUser(survey) {
   const happinessReplies = survey.getMessagesByAliasAndType(
@@ -253,26 +269,14 @@ function receivedPostback(event) {
   // When a postback is called, we'll send a message back to the sender to
   // let them know it was successful
   if (action === RESTART_SURVEY_PAYLOAD) {
+    sendMessageToUser(senderID, 'No problem, I can restart that for you!');
     startSurvey(senderID);
   }
-}
 
-function conditionsMetForHiMessageToTriggerNewSurvey(userId) {
-  // if we have no state of a survey, or they have a survey that's finished (last question sent has final stage alias)
-  // let them start again.. otherwise completetly ignore this and exit the function
-  const currentSurvey = getCurrentlyTrackedSurveyByUser(userId);
-  if (!currentSurvey) return true;
-
-  const mostRecentSentMessage = currentSurvey.getMostRecentMessage(
-    MessageType.Outgoing
-  );
-  if (
-    mostRecentSentMessage &&
-    mostRecentSentMessage.alias === FINAL_SURVEY_STAGE
-  )
-    return true;
-
-  return false;
+  if (action === GET_STARTED_PAYLOAD) {
+    sendMessageToUser(senderID, 'Thanks for choosing to get started!');
+    startSurvey(senderID);
+  }
 }
 
 /*
@@ -285,14 +289,6 @@ function conditionsMetForHiMessageToTriggerNewSurvey(userId) {
  */
 function receivedMessage(event) {
   const senderID = event.sender.id;
-  if (event.message.text && event.message.text === 'hi') {
-    if (conditionsMetForHiMessageToTriggerNewSurvey(senderID)) {
-      startSurveyAndFinishAnyOpenSurvey(senderID);
-      return;
-    }
-    // just ignore that they've said hi, don't process the message further
-    return;
-  }
   trackReceivedMessage(event);
   finishSurveyIfExitConditionsMet(event.sender.id);
 
@@ -598,7 +594,7 @@ function callSendAPI(messageData) {
   );
 }
 
-function setupPersistentMenu() {
+function setupPersistentMenuAndGetStartedButton() {
   request(
     {
       baseUrl: GRAPH_API_BASE,
@@ -607,7 +603,7 @@ function setupPersistentMenu() {
       method: 'POST',
       qs: {
         get_started: {
-          payload: '<postback_payload>',
+          payload: GET_STARTED_PAYLOAD,
         },
         persistent_menu: [
           {
@@ -639,7 +635,7 @@ function setupPersistentMenu() {
 // certificate authority.
 app.listen(app.get('port'), () => {
   console.log('Node app is running on port', app.get('port'));
-  setupPersistentMenu();
+  setupPersistentMenuAndGetStartedButton();
 });
 
 module.exports = app;
