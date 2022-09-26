@@ -9,14 +9,20 @@
 
 /* jshint node: true, devel: true */
 
-'use strict';
+('use strict');
+
+const FINAL_SURVEY_STAGE = 'thankyou';
 
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
 const express = require('express');
 const request = require('request');
+const { v4: uuidv4 } = require('uuid');
+const Survey = require('./survey');
+const MessageType = require('./messageType');
 require('dotenv').config();
 
+let surveysTracked = [];
 const app = express();
 app.set('port', process.env.PORT || 5000);
 app.set('view engine', 'ejs');
@@ -72,11 +78,88 @@ function verifyRequestSignature(req, res, buf) {
   }
 }
 
+function startTrackingNewUserSurvey(userId) {
+  const parsedUserId = trimAndValidateUserId(userId);
+
+  const currentlyTrackedSurvey = getCurrentlyTrackedSurveyByUser(parsedUserId);
+  if (currentlyTrackedSurvey) {
+    console.log(
+      `I am already tracking an unfinished survey for this user ${parsedUserId}. I will discard it but perhaps later send off the contents`
+    );
+    finishSurveyAndStopTracking(currentlyTrackedSurvey);
+  }
+
+  const id = uuidv4();
+  const dateTime = Date.now();
+  const survey = new Survey(id, parsedUserId, dateTime, undefined, undefined);
+  if (!surveysTracked) {
+    console.log('tracking first survey');
+    surveysTracked = [];
+    surveysTracked.push(survey);
+  } else {
+    surveysTracked.push(survey);
+  }
+
+  console.log(`Started tracking survey for user ${parsedUserId}.`);
+}
+
+function trimAndValidateUserId(userId) {
+  return userId.trim();
+}
+
+function getCurrentlyTrackedSurveyByUserOrStartTrackingIfNoneFound(userId) {
+  let trackedSurvey = getCurrentlyTrackedSurveyByUser(userId);
+  if (!trackedSurvey) {
+    startTrackingNewUserSurvey(userId);
+    trackedSurvey = getCurrentlyTrackedSurveyByUser(userId);
+  }
+  if (!trackedSurvey) {
+    throw Error(`Can't find or track survey for user ${userId}`);
+  }
+  return trackedSurvey;
+}
+
+function getCurrentlyTrackedSurveyByUser(userId) {
+  const matchingSurvey = surveysTracked.find((survey) => {
+    const result = survey.userId === userId;
+    console.log(
+      `comparing ${survey.userId} with ${userId} result is ${result}`
+    );
+    return result;
+  });
+  if (!matchingSurvey) {
+    console.log(
+      `couldn't find matchingSurvey for ${userId}. I am tracking ${
+        surveysTracked && surveysTracked.length ? surveysTracked.length : '0'
+      } surveys.`
+    );
+  }
+  return matchingSurvey;
+}
+
+function finishSurveyAndStopTracking(survey) {
+  survey.finish();
+  stopTrackingUserSurvey(survey);
+}
+
+function stopTrackingUserSurvey(survey) {
+  surveysTracked = surveysTracked.filter(
+    (trackedSurvey) => survey.id !== trackedSurvey.id
+  );
+  console.log(`Stopped tracking survey. ${survey.outputSurvey()}`);
+}
+
 app.get('/start/:user', (req, res) => {
-  console.log('Start', req.params.user);
-  sendStartSurvey(req.params.user);
+  const userId = req.params.user;
+  startSurvey(userId);
   res.sendStatus(200);
 });
+
+function startSurvey(userId) {
+  console.log('Start', userId);
+  startTrackingNewUserSurvey(userId);
+  sendStartSurvey(userId);
+}
 
 /*
  * Use your own validation token. This can be any string. Check that the
@@ -127,6 +210,24 @@ app.post('/webhook', (req, res) => {
   }
 });
 
+function conditionsMetForHiMessageToTriggerNewSurvey(userId) {
+  // if we have no state of a survey, or they have a survey that's finished (last question sent has final stage alias)
+  // let them start again.. otherwise completetly ignore this and exit the function
+  const currentSurvey = getCurrentlyTrackedSurveyByUser(userId);
+  if (!currentSurvey) return true;
+
+  const mostRecentSentMessage = currentSurvey.getMostRecentMessage(
+    MessageType.Outgoing
+  );
+  if (
+    mostRecentSentMessage &&
+    mostRecentSentMessage.alias === FINAL_SURVEY_STAGE
+  )
+    return true;
+
+  return false;
+}
+
 /*
  * Message Event
  *
@@ -137,6 +238,17 @@ app.post('/webhook', (req, res) => {
  */
 function receivedMessage(event) {
   const senderID = event.sender.id;
+  if (event.message.text && event.message.text === 'hi') {
+    if (conditionsMetForHiMessageToTriggerNewSurvey(senderID)) {
+      startSurvey(senderID);
+    } else {
+      // just ignore that they've said hi, don't process the message further
+      return;
+    }
+  }
+  trackReceivedMessage(event);
+  finishSurveyIfExitConditionsMet(event.sender.id);
+
   const recipientID = event.recipient.id;
   const timeOfMessage = event.timestamp;
   const { message } = event;
@@ -263,6 +375,7 @@ function sendDelaySurvey(recipientId) {
  */
 function sendThankYou(recipientId) {
   const messageData = {
+    alias: FINAL_SURVEY_STAGE,
     recipient: {
       id: recipientId,
     },
@@ -280,6 +393,7 @@ function sendThankYou(recipientId) {
  */
 function sendFirstQuestion(recipientId) {
   const messageData = {
+    alias: 'happiness',
     recipient: {
       id: recipientId,
     },
@@ -324,6 +438,7 @@ function sendFirstQuestion(recipientId) {
  */
 function sendSecondQuestion(recipientId) {
   const messageData = {
+    alias: 'longevity',
     recipient: {
       id: recipientId,
     },
@@ -357,6 +472,41 @@ function sendSecondQuestion(recipientId) {
   callSendAPI(messageData);
 }
 
+function trackSentMessage(messageData) {
+  const userId = trimAndValidateUserId(messageData.recipient.id);
+  const messageText = messageData.message.text;
+  const trackedSurvey =
+    getCurrentlyTrackedSurveyByUserOrStartTrackingIfNoneFound(userId);
+  trackedSurvey.trackSentMessage(messageText, messageData.alias);
+  trackedSurvey.outputSurvey();
+}
+
+function trackReceivedMessage(event) {
+  const userId = trimAndValidateUserId(event.sender.id);
+  const { timestamp } = event;
+  const { id, text } = event.message;
+
+  const trackedSurvey =
+    getCurrentlyTrackedSurveyByUserOrStartTrackingIfNoneFound(userId);
+  trackedSurvey.trackReceivedMessage(id, timestamp, text);
+  trackedSurvey.outputSurvey();
+}
+
+function finishSurveyIfExitConditionsMet(userId) {
+  const parsedUserId = trimAndValidateUserId(userId);
+  const trackedSurvey =
+    getCurrentlyTrackedSurveyByUserOrStartTrackingIfNoneFound(parsedUserId);
+  const mostRecentReceivedMessage = trackedSurvey.getMostRecentMessage(
+    MessageType.Incoming
+  );
+  if (
+    mostRecentReceivedMessage &&
+    mostRecentReceivedMessage.alias === FINAL_SURVEY_STAGE
+  ) {
+    finishSurveyAndStopTracking(trackedSurvey);
+  }
+}
+
 /*
  * Call the Send API. The message data goes in the body. If successful, we'll
  * get the message id in a response
@@ -382,6 +532,7 @@ function callSendAPI(messageData) {
             messageId,
             recipientId
           );
+          trackSentMessage(messageData);
         } else {
           console.log(
             'Successfully called Send API for recipient %s',
