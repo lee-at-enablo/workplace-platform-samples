@@ -23,6 +23,7 @@ const crypto = require('crypto');
 const express = require('express');
 const request = require('request');
 const { v4: uuidv4 } = require('uuid');
+const formatRelative = require('date-fns/formatRelative');
 const Survey = require('./survey');
 const MessageType = require('./messageType');
 require('dotenv').config();
@@ -95,9 +96,14 @@ function finishAnyOpenSurvey(userId) {
 function startTrackingNewUserSurvey(userId) {
   const parsedUserId = trimAndValidateUserId(userId);
 
-  const id = uuidv4();
   const dateTime = Date.now();
-  const survey = new Survey(id, parsedUserId, dateTime, undefined, undefined);
+  const survey = new Survey(
+    uuidv4(),
+    parsedUserId,
+    dateTime,
+    undefined,
+    undefined
+  );
   if (!surveysTracked) {
     surveysTracked = [];
     surveysTracked.push(survey);
@@ -133,7 +139,7 @@ function finishSurveyAndStopTracking(survey) {
   stopTrackingUserSurvey(survey);
 }
 
-function sendMessageToUser(userId, messageText) {
+function sendMessageToUser(userId, messageText, doNotTrack = false) {
   const messageData = {
     recipient: {
       id: userId,
@@ -143,15 +149,20 @@ function sendMessageToUser(userId, messageText) {
     },
   };
 
-  callSendAPI(messageData);
+  callSendAPI(messageData, doNotTrack);
 }
 
 function sendSurveyDataToGroupsFeed(survey) {
   let messageDescription = '';
 
   messageDescription += `# Employee Survey Bot \n`;
-  messageDescription += `## Survey submitted for user: ${survey.userId} \n`;
-  messageDescription += `Survey started: ${survey.startDateTime} \n`;
+  messageDescription += `## Survey submitted for user: ${getUserName(
+    survey.userId
+  )} \n`;
+  messageDescription += `Survey started: ${formatRelative(
+    survey.startDateTime,
+    new Date()
+  )} \n`;
   messageDescription += `${
     survey.messages && survey.messages.length > 0 ? survey.messages.length : '0'
   } messages exchanged \n`;
@@ -174,16 +185,21 @@ function sendSurveyDataToGroupsFeed(survey) {
   messageDescription += '\n';
   messageDescription += '\n';
 
-  if (!this.endDateTime) {
+  if (!survey.endDateTime) {
     messageDescription += 'Survey has not been marked as finished  \n';
   } else {
-    messageDescription += `Survey finished: ${survey.endDateTime} \n`;
+    messageDescription += `Survey finished: ${formatRelative(
+      survey.endDateTime,
+      new Date()
+    )} \n`;
   }
 
   const messageData = {
     formatting: 'MARKDOWN',
     message: messageDescription,
   };
+
+  // console.log(messageDescription);
 
   sendMessageToGroupFeed(messageData);
 }
@@ -211,7 +227,7 @@ function sendSummaryToUser(survey) {
     },
   };
 
-  callSendAPI(messageData);
+  callSendAPI(messageData, true);
 }
 
 function stopTrackingUserSurvey(survey) {
@@ -233,7 +249,7 @@ function startSurveyAndFinishAnyOpenSurvey(userId) {
 
 function startSurvey(userId, finishOpenSurvey) {
   console.log('Start', userId);
-  if (finishOpenSurvey) {
+  if (finishOpenSurvey && finishOpenSurvey === true) {
     finishAnyOpenSurvey(userId);
   }
   startTrackingNewUserSurvey(userId);
@@ -311,12 +327,12 @@ function receivedPostback(event) {
   // When a postback is called, we'll send a message back to the sender to
   // let them know it was successful
   if (action === RESTART_SURVEY_PAYLOAD) {
-    startSurvey(senderID);
+    startSurveyAndFinishAnyOpenSurvey(senderID);
   }
 
   if (action === GET_STARTED_PAYLOAD) {
-    sendMessageToUser(senderID, 'Thanks for choosing to get started!');
-    startSurvey(senderID);
+    sendMessageToUser(senderID, 'Thanks for choosing to get started!', true);
+    startSurveyAndFinishAnyOpenSurvey(senderID);
   }
 }
 
@@ -606,7 +622,7 @@ function finishSurveyIfExitConditionsMet(userId) {
  * get the message id in a response
  *
  */
-function callSendAPI(messageData) {
+function callSendAPI(messageData, doNotTrack = false) {
   request(
     {
       baseUrl: GRAPH_API_BASE,
@@ -626,7 +642,9 @@ function callSendAPI(messageData) {
             messageId,
             recipientId
           );
-          trackSentMessage(messageData);
+          if (!doNotTrack) {
+            trackSentMessage(messageData);
+          }
         } else {
           console.log(
             'Successfully called Send API for recipient %s',
@@ -684,6 +702,32 @@ function sendMessageToGroupFeed(messageData) {
           body.error
         );
       }
+    }
+  );
+}
+
+function getUserName(userId) {
+  request(
+    {
+      baseUrl: GRAPH_API_BASE,
+      url: `/${userId}`,
+      qs: { access_token: ACCESS_TOKEN, fields: 'id, email, name, picture' },
+      method: 'GET',
+    },
+    (error, response, body) => {
+      if (!error && response.statusCode == 200) {
+        console.log(body);
+        console.log(body.name);
+        console.log(body.id);
+        console.log(body.email);
+        return body.name;
+      }
+      console.error(
+        'Failed calling User API',
+        response.statusCode,
+        response.statusMessage,
+        body.error
+      );
     }
   );
 }
