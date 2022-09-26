@@ -12,6 +12,8 @@
 ('use strict');
 
 const FINAL_SURVEY_STAGE = 'thankyou';
+const HAPPINESS_SURVEY_STAGE = 'happiness';
+const LONGEVITY_SURVEY_STAGE = 'longevity';
 
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
@@ -83,9 +85,6 @@ function startTrackingNewUserSurvey(userId) {
 
   const currentlyTrackedSurvey = getCurrentlyTrackedSurveyByUser(parsedUserId);
   if (currentlyTrackedSurvey) {
-    console.log(
-      `I am already tracking an unfinished survey for this user ${parsedUserId}. I will discard it but perhaps later send off the contents`
-    );
     finishSurveyAndStopTracking(currentlyTrackedSurvey);
   }
 
@@ -93,14 +92,11 @@ function startTrackingNewUserSurvey(userId) {
   const dateTime = Date.now();
   const survey = new Survey(id, parsedUserId, dateTime, undefined, undefined);
   if (!surveysTracked) {
-    console.log('tracking first survey');
     surveysTracked = [];
     surveysTracked.push(survey);
   } else {
     surveysTracked.push(survey);
   }
-
-  console.log(`Started tracking survey for user ${parsedUserId}.`);
 }
 
 function trimAndValidateUserId(userId) {
@@ -120,26 +116,39 @@ function getCurrentlyTrackedSurveyByUserOrStartTrackingIfNoneFound(userId) {
 }
 
 function getCurrentlyTrackedSurveyByUser(userId) {
-  const matchingSurvey = surveysTracked.find((survey) => {
-    const result = survey.userId === userId;
-    console.log(
-      `comparing ${survey.userId} with ${userId} result is ${result}`
-    );
-    return result;
-  });
-  if (!matchingSurvey) {
-    console.log(
-      `couldn't find matchingSurvey for ${userId}. I am tracking ${
-        surveysTracked && surveysTracked.length ? surveysTracked.length : '0'
-      } surveys.`
-    );
-  }
-  return matchingSurvey;
+  return surveysTracked.find((survey) => survey.userId === userId);
 }
 
 function finishSurveyAndStopTracking(survey) {
   survey.finish();
+  sendSummaryToUser(survey);
   stopTrackingUserSurvey(survey);
+}
+
+function sendSummaryToUser(survey) {
+  const happinessReplies = survey.getMessagesByAliasAndType(
+    HAPPINESS_SURVEY_STAGE,
+    MessageType.Incoming
+  );
+  const longevityReplies = survey.getMessagesByAliasAndType(
+    LONGEVITY_SURVEY_STAGE,
+    MessageType.Incoming
+  );
+
+  const messageData = {
+    recipient: {
+      id: survey.userId,
+    },
+    message: {
+      text: `You said you were ${happinessReplies.map(
+        (message) => message.text
+      )} happy and wish to stay at the company for ${longevityReplies.map(
+        (message) => message.text
+      )}`,
+    },
+  };
+
+  callSendAPI(messageData);
 }
 
 function stopTrackingUserSurvey(survey) {
@@ -393,7 +402,7 @@ function sendThankYou(recipientId) {
  */
 function sendFirstQuestion(recipientId) {
   const messageData = {
-    alias: 'happiness',
+    alias: HAPPINESS_SURVEY_STAGE,
     recipient: {
       id: recipientId,
     },
@@ -438,7 +447,7 @@ function sendFirstQuestion(recipientId) {
  */
 function sendSecondQuestion(recipientId) {
   const messageData = {
-    alias: 'longevity',
+    alias: LONGEVITY_SURVEY_STAGE,
     recipient: {
       id: recipientId,
     },

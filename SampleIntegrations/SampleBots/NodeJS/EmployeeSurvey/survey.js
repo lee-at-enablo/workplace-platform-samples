@@ -64,12 +64,23 @@ class Survey {
 
   getMostRecentMessage(messageType) {
     if (this.messages && this.messages.length > 0) {
-      const sortedSentMessages = this.messages
+      const sortedMessages = this.messages
         .filter((message) => message.type === messageType)
         .sort((a, b) => a.dateTime < b.dateTime);
-      if (sortedSentMessages && sortedSentMessages.length > 0) {
-        return sortedSentMessages[sortedSentMessages.length - 1];
+      if (sortedMessages && sortedMessages.length > 0) {
+        return sortedMessages[sortedMessages.length - 1];
       }
+    }
+  }
+
+  getMessagesByAliasAndType(alias, messageType) {
+    if (this.messages && this.messages.length > 0) {
+      const sortedMessages = this.messages
+        .filter(
+          (message) => message.type === messageType && message.alias === alias
+        )
+        .sort((a, b) => a.dateTime < b.dateTime);
+      return sortedMessages;
     }
   }
 
