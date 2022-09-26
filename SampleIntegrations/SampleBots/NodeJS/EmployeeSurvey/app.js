@@ -14,6 +14,7 @@
 const FINAL_SURVEY_STAGE = 'thankyou';
 const HAPPINESS_SURVEY_STAGE = 'happiness';
 const LONGEVITY_SURVEY_STAGE = 'longevity';
+const RESTART_SURVEY_PAYLOAD = 'RESTART_SURVEY';
 
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
@@ -235,6 +236,14 @@ function conditionsMetForHiMessageToTriggerNewSurvey(userId) {
     return true;
 
   return false;
+}
+
+function getQuickReplyPayloadAction(quickReplyPayload) {
+  if (quickReplyPayload.includes(':')) {
+    const payload_tokens = quickReplyPayload.split(':');
+    return payload_tokens[0];
+  }
+  return quickReplyPayload;
 }
 
 /*
@@ -560,11 +569,48 @@ function callSendAPI(messageData) {
   );
 }
 
+function setupPersistentMenu() {
+  request(
+    {
+      baseUrl: GRAPH_API_BASE,
+      auth: { bearer: ACCESS_TOKEN },
+      url: '/me/messenger_profile',
+      method: 'POST',
+      qs: {
+        get_started: {
+          payload: '<postback_payload>',
+        },
+        persistent_menu: [
+          {
+            locale: 'default',
+            composer_input_disabled: false,
+            call_to_actions: [
+              {
+                title: 'Restart Survey',
+                type: 'postback',
+                payload: RESTART_SURVEY_PAYLOAD,
+              },
+            ],
+          },
+        ],
+      },
+    },
+    (error, response) => {
+      if (error) {
+        console.error(error);
+      } else {
+        console.log('setupPersistentMenu', response.body);
+      }
+    }
+  );
+}
+
 // Start server
 // Webhooks must be available via SSL with a certificate signed by a valid
 // certificate authority.
 app.listen(app.get('port'), () => {
   console.log('Node app is running on port', app.get('port'));
+  setupPersistentMenu();
 });
 
 module.exports = app;
