@@ -81,13 +81,17 @@ function verifyRequestSignature(req, res, buf) {
   }
 }
 
-function startTrackingNewUserSurvey(userId) {
+function finishAnyOpenSurvey(userId) {
   const parsedUserId = trimAndValidateUserId(userId);
 
   const currentlyTrackedSurvey = getCurrentlyTrackedSurveyByUser(parsedUserId);
   if (currentlyTrackedSurvey) {
     finishSurveyAndStopTracking(currentlyTrackedSurvey);
   }
+}
+
+function startTrackingNewUserSurvey(userId) {
+  const parsedUserId = trimAndValidateUserId(userId);
 
   const id = uuidv4();
   const dateTime = Date.now();
@@ -161,12 +165,19 @@ function stopTrackingUserSurvey(survey) {
 
 app.get('/start/:user', (req, res) => {
   const userId = req.params.user;
-  startSurvey(userId);
+  startSurveyAndFinishAnyOpenSurvey(userId);
   res.sendStatus(200);
 });
 
-function startSurvey(userId) {
+function startSurveyAndFinishAnyOpenSurvey(userId) {
+  startSurvey(userId, true);
+}
+
+function startSurvey(userId, finishOpenSurvey) {
   console.log('Start', userId);
+  if (finishOpenSurvey) {
+    finishAnyOpenSurvey(userId);
+  }
   startTrackingNewUserSurvey(userId);
   sendStartSurvey(userId);
 }
@@ -208,6 +219,8 @@ app.post('/webhook', (req, res) => {
       pageEntry.messaging.forEach((messagingEvent) => {
         if (messagingEvent.message) {
           receivedMessage(messagingEvent);
+        } else if (messagingEvent.postback) {
+          receivedPostback(messagingEvent);
         }
       });
     });
@@ -219,6 +232,30 @@ app.post('/webhook', (req, res) => {
     res.sendStatus(200);
   }
 });
+
+/*
+ * Postback Event
+ *
+ * This event is called when a postback is tapped on a Structured Message.
+ * https://developers.facebook.com/docs/messenger-platform/webhook-reference/postback-received
+ *
+ */
+function receivedPostback(event) {
+  const senderID = event.sender.id;
+
+  // The 'payload' param is a developer-defined field which is set in a postback
+  // button for Structured Messages.
+  const { payload } = event.postback;
+  // Embed extra info int he payload in the format ACTION:OBJECT
+  const tokens = payload.split(':');
+  const action = tokens[0];
+
+  // When a postback is called, we'll send a message back to the sender to
+  // let them know it was successful
+  if (action === RESTART_SURVEY_PAYLOAD) {
+    startSurvey(senderID);
+  }
+}
 
 function conditionsMetForHiMessageToTriggerNewSurvey(userId) {
   // if we have no state of a survey, or they have a survey that's finished (last question sent has final stage alias)
@@ -238,14 +275,6 @@ function conditionsMetForHiMessageToTriggerNewSurvey(userId) {
   return false;
 }
 
-function getQuickReplyPayloadAction(quickReplyPayload) {
-  if (quickReplyPayload.includes(':')) {
-    const payload_tokens = quickReplyPayload.split(':');
-    return payload_tokens[0];
-  }
-  return quickReplyPayload;
-}
-
 /*
  * Message Event
  *
@@ -258,11 +287,11 @@ function receivedMessage(event) {
   const senderID = event.sender.id;
   if (event.message.text && event.message.text === 'hi') {
     if (conditionsMetForHiMessageToTriggerNewSurvey(senderID)) {
-      startSurvey(senderID);
-    } else {
-      // just ignore that they've said hi, don't process the message further
+      startSurveyAndFinishAnyOpenSurvey(senderID);
       return;
     }
+    // just ignore that they've said hi, don't process the message further
+    return;
   }
   trackReceivedMessage(event);
   finishSurveyIfExitConditionsMet(event.sender.id);
