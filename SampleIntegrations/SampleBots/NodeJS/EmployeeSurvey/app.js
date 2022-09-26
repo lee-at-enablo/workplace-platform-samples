@@ -16,6 +16,7 @@ const HAPPINESS_SURVEY_STAGE = 'happiness';
 const LONGEVITY_SURVEY_STAGE = 'longevity';
 const RESTART_SURVEY_PAYLOAD = 'RESTART_SURVEY';
 const GET_STARTED_PAYLOAD = 'GET_STARTED';
+const GROUP_ID_SEND_COMPLETED_SURVEY = '462913109217866';
 
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
@@ -128,6 +129,7 @@ function getCurrentlyTrackedSurveyByUser(userId) {
 function finishSurveyAndStopTracking(survey) {
   survey.finish();
   sendSummaryToUser(survey);
+  sendSurveyDataToGroupsFeed(survey);
   stopTrackingUserSurvey(survey);
 }
 
@@ -144,7 +146,47 @@ function sendMessageToUser(userId, messageText) {
   callSendAPI(messageData);
 }
 
-function sendGettingStartedMessageToUser(userId) {}
+function sendSurveyDataToGroupsFeed(survey) {
+  let messageDescription = '';
+
+  messageDescription += `# Employee Survey Bot \n`;
+  messageDescription += `## Survey submitted for user: ${survey.userId} \n`;
+  messageDescription += `Survey started: ${survey.startDateTime} \n`;
+  messageDescription += `${
+    survey.messages && survey.messages.length > 0 ? survey.messages.length : '0'
+  } messages exchanged \n`;
+
+  messageDescription += '\n';
+
+  // todo sort messages first
+  if (survey.messages && survey.messages.length > 0) {
+    survey.messages.forEach((message) => {
+      if (message.type === MessageType.Outgoing) {
+        messageDescription += `❓ *${message.text}* \n`;
+      } else {
+        messageDescription += `✅ ${message.text}  \n`;
+      }
+      messageDescription += '\n';
+      messageDescription += '\n';
+    });
+  }
+
+  messageDescription += '\n';
+  messageDescription += '\n';
+
+  if (!this.endDateTime) {
+    messageDescription += 'Survey has not been marked as finished  \n';
+  } else {
+    messageDescription += `Survey finished: ${survey.endDateTime} \n`;
+  }
+
+  const messageData = {
+    formatting: 'MARKDOWN',
+    message: messageDescription,
+  };
+
+  sendMessageToGroupFeed(messageData);
+}
 
 function sendSummaryToUser(survey) {
   const happinessReplies = survey.getMessagesByAliasAndType(
@@ -161,7 +203,7 @@ function sendSummaryToUser(survey) {
       id: survey.userId,
     },
     message: {
-      text: `You said you were ${happinessReplies.map(
+      text: `Thanks! Just so you know I was paying attention  - you said you were ${happinessReplies.map(
         (message) => message.text
       )} happy and wish to stay at the company for ${longevityReplies.map(
         (message) => message.text
@@ -269,7 +311,6 @@ function receivedPostback(event) {
   // When a postback is called, we'll send a message back to the sender to
   // let them know it was successful
   if (action === RESTART_SURVEY_PAYLOAD) {
-    sendMessageToUser(senderID, 'No problem, I can restart that for you!');
     startSurvey(senderID);
   }
 
@@ -423,7 +464,7 @@ function sendThankYou(recipientId) {
       id: recipientId,
     },
     message: {
-      text: 'Thanks for your feedback! If you have any other comments, write them below.',
+      text: 'Thanks for your feedback! Please provide some closing comments to complete the survey.',
     },
   };
 
@@ -441,7 +482,7 @@ function sendFirstQuestion(recipientId) {
       id: recipientId,
     },
     message: {
-      text: "Between 1 and 5, where 5 is 'Very Happy', how happy are you working here?",
+      text: "Between 1 and 5, where 5 is 'Very Happy', how happy are you working here? Please choose one of the following options:",
       quick_replies: [
         {
           content_type: 'text',
@@ -468,6 +509,11 @@ function sendFirstQuestion(recipientId) {
           title: '5 😃',
           payload: 'HAPPY:5',
         },
+        {
+          content_type: 'text',
+          title: 'Other',
+          payload: 'HAPPY:Other',
+        },
       ],
     },
   };
@@ -486,7 +532,7 @@ function sendSecondQuestion(recipientId) {
       id: recipientId,
     },
     message: {
-      text: 'How long do you plan to stay in the company?',
+      text: 'How long do you plan to stay in the company? Please choose one of the following options:',
       quick_replies: [
         {
           content_type: 'text',
@@ -507,6 +553,11 @@ function sendSecondQuestion(recipientId) {
           content_type: 'text',
           title: '5+ years',
           payload: 'STAY:4',
+        },
+        {
+          content_type: 'text',
+          title: 'Other',
+          payload: 'STAY:Other',
         },
       ],
     },
@@ -585,6 +636,49 @@ function callSendAPI(messageData) {
       } else {
         console.error(
           'Failed calling Send API',
+          response.statusCode,
+          response.statusMessage,
+          body.error
+        );
+      }
+    }
+  );
+}
+
+/*
+ * Post to the /{group-id}/feed endpoint
+ *
+ */
+function sendMessageToGroupFeed(messageData) {
+  request(
+    {
+      baseUrl: GRAPH_API_BASE,
+      url: `/${GROUP_ID_SEND_COMPLETED_SURVEY}/feed`,
+      qs: { access_token: ACCESS_TOKEN },
+      method: 'POST',
+      json: messageData,
+    },
+    (error, response, body) => {
+      if (!error && response.statusCode == 200) {
+        const recipientId = body.recipient_id;
+        const messageId = body.message_id;
+
+        if (messageId) {
+          console.log(
+            'Successfully sent message with id %s to recipient %s',
+            messageId,
+            recipientId
+          );
+          trackSentMessage(messageData);
+        } else {
+          console.log(
+            'Successfully called group feed API for recipient %s',
+            recipientId
+          );
+        }
+      } else {
+        console.error(
+          'Failed calling Group Feed API',
           response.statusCode,
           response.statusMessage,
           body.error
