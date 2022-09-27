@@ -152,11 +152,11 @@ function sendMessageToUser(userId, messageText, doNotTrack = false) {
   callSendAPI(messageData, doNotTrack);
 }
 
-function sendSurveyDataToGroupsFeed(survey) {
+async function sendSurveyDataToGroupsFeed(survey) {
   let messageDescription = '';
 
   messageDescription += `# Employee Survey Bot \n`;
-  messageDescription += `## Survey submitted for user: ${getUserName(
+  messageDescription += `## Survey submitted for user: ${await getUserName(
     survey.userId
   )} \n`;
   messageDescription += `Survey started: ${formatRelative(
@@ -707,29 +707,33 @@ function sendMessageToGroupFeed(messageData) {
 }
 
 function getUserName(userId) {
-  request(
-    {
-      baseUrl: GRAPH_API_BASE,
-      url: `/${userId}`,
-      qs: { access_token: ACCESS_TOKEN, fields: 'id, email, name, picture' },
-      method: 'GET',
-    },
-    (error, response, body) => {
-      if (!error && response.statusCode == 200) {
-        console.log(body);
-        console.log(body.name);
-        console.log(body.id);
-        console.log(body.email);
-        return body.name;
+  return new Promise((resolve, reject) => {
+    request(
+      {
+        baseUrl: GRAPH_API_BASE,
+        url: `/${userId}`,
+        qs: { access_token: ACCESS_TOKEN, fields: 'id, email, name, picture' },
+        method: 'GET',
+      },
+      (error, response, body) => {
+        if (!error && response.statusCode == 200) {
+          body = JSON.parse(body);
+          console.log(body);
+          console.log(body.name);
+          console.log(body.id);
+          console.log(body.email);
+          resolve(body.name);
+        }
+        console.error(
+          'Failed calling User API',
+          response.statusCode,
+          response.statusMessage,
+          body.error
+        );
+        reject(new Error('username unavailable'));
       }
-      console.error(
-        'Failed calling User API',
-        response.statusCode,
-        response.statusMessage,
-        body.error
-      );
-    }
-  );
+    );
+  });
 }
 
 function setupPersistentMenuAndGetStartedButton() {
