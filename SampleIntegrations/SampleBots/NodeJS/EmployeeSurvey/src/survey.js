@@ -1,4 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
+const formatRelative = require('date-fns/formatRelative');
 const Message = require('./message');
 const MessageType = require('./messageType');
 
@@ -44,6 +45,48 @@ class Survey {
       console.log('Survey has not been marked as finished');
     }
     console.log('***');
+  }
+
+  getMarkdownDescription(userDisplayName) {
+    let messageDescription = '';
+
+    messageDescription += `# Employee Survey Bot \n`;
+    messageDescription += `## Survey submitted for user: ${userDisplayName} \n`;
+    messageDescription += `Survey started: ${formatRelative(
+      this.startDateTime,
+      new Date()
+    )} \n`;
+    messageDescription += `${
+      this.messages && this.messages.length > 0 ? this.messages.length : '0'
+    } messages exchanged \n`;
+
+    messageDescription += '\n';
+
+    // todo sort messages first
+    if (this.messages && this.messages.length > 0) {
+      this.messages.forEach((message) => {
+        if (message.type === MessageType.Outgoing) {
+          messageDescription += `❓ *${message.text}* \n`;
+        } else {
+          messageDescription += `✅ ${message.text}  \n`;
+        }
+        messageDescription += '\n';
+        messageDescription += '\n';
+      });
+    }
+
+    messageDescription += '\n';
+    messageDescription += '\n';
+
+    if (!this.endDateTime) {
+      messageDescription += 'Survey has not been marked as finished  \n';
+    } else {
+      messageDescription += `Survey finished: ${formatRelative(
+        this.endDateTime,
+        new Date()
+      )} \n`;
+    }
+    return messageDescription;
   }
 
   finish() {

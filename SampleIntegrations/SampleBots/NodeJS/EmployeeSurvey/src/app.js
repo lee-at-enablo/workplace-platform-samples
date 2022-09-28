@@ -22,14 +22,12 @@ const bodyParser = require('body-parser');
 const crypto = require('crypto');
 const express = require('express');
 const request = require('request');
-const { v4: uuidv4 } = require('uuid');
-const formatRelative = require('date-fns/formatRelative');
-const Survey = require('./survey');
+const SurveyTrackingService = require('./services/SurveyTrackingService');
 const MessageType = require('./messageType');
 require('dotenv').config();
 
-let surveysTracked = [];
 const app = express();
+const surveyTrackingService = new SurveyTrackingService();
 app.set('port', process.env.PORT || 5000);
 app.set('view engine', 'ejs');
 app.use(bodyParser.json({ verify: verifyRequestSignature }));
@@ -84,59 +82,51 @@ function verifyRequestSignature(req, res, buf) {
   }
 }
 
-function finishAnyOpenSurvey(userId) {
-  const parsedUserId = trimAndValidateUserId(userId);
-
-  const currentlyTrackedSurvey = getCurrentlyTrackedSurveyByUser(parsedUserId);
-  if (currentlyTrackedSurvey) {
-    finishSurveyAndStopTracking(currentlyTrackedSurvey);
+function startSurvey(userId, finishOpenSurvey) {
+  console.log('Start', userId);
+  if (finishOpenSurvey && finishOpenSurvey === true) {
+    finishAnyOpenSurvey(userId);
   }
+  surveyTrackingService.startTrackingNewUserSurvey(userId);
+  sendStartSurvey(userId);
 }
 
-function startTrackingNewUserSurvey(userId) {
-  const parsedUserId = trimAndValidateUserId(userId);
-
-  const dateTime = Date.now();
-  const survey = new Survey(
-    uuidv4(),
-    parsedUserId,
-    dateTime,
-    undefined,
-    undefined
-  );
-  if (!surveysTracked) {
-    surveysTracked = [];
-    surveysTracked.push(survey);
-  } else {
-    surveysTracked.push(survey);
-  }
-}
-
-function trimAndValidateUserId(userId) {
-  return userId.trim();
-}
-
-function getCurrentlyTrackedSurveyByUserOrStartTrackingIfNoneFound(userId) {
-  let trackedSurvey = getCurrentlyTrackedSurveyByUser(userId);
-  if (!trackedSurvey) {
-    startTrackingNewUserSurvey(userId);
-    trackedSurvey = getCurrentlyTrackedSurveyByUser(userId);
-  }
-  if (!trackedSurvey) {
-    throw Error(`Can't find or track survey for user ${userId}`);
-  }
-  return trackedSurvey;
-}
-
-function getCurrentlyTrackedSurveyByUser(userId) {
-  return surveysTracked.find((survey) => survey.userId === userId);
+function startSurveyAndFinishAnyOpenSurvey(userId) {
+  startSurvey(userId, true);
 }
 
 function finishSurveyAndStopTracking(survey) {
   survey.finish();
   sendSummaryToUser(survey);
   sendSurveyDataToGroupsFeed(survey);
-  stopTrackingUserSurvey(survey);
+  surveyTrackingService.stopTrackingUserSurvey(survey);
+}
+
+function finishAnyOpenSurvey(userId) {
+  const parsedUserId = surveyTrackingService.trimAndValidateUserId(userId);
+
+  const currentlyTrackedSurvey =
+    surveyTrackingService.getCurrentlyTrackedSurveyByUser(parsedUserId);
+  if (currentlyTrackedSurvey) {
+    finishSurveyAndStopTracking(currentlyTrackedSurvey);
+  }
+}
+
+function finishSurveyIfExitConditionsMet(userId) {
+  const parsedUserId = surveyTrackingService.trimAndValidateUserId(userId);
+  const trackedSurvey =
+    surveyTrackingService.getCurrentlyTrackedSurveyByUserOrStartTrackingIfNoneFound(
+      parsedUserId
+    );
+  const mostRecentReceivedMessage = trackedSurvey.getMostRecentMessage(
+    MessageType.Incoming
+  );
+  if (
+    mostRecentReceivedMessage &&
+    mostRecentReceivedMessage.alias === FINAL_SURVEY_STAGE
+  ) {
+    finishSurveyAndStopTracking(trackedSurvey);
+  }
 }
 
 function sendMessageToUser(userId, messageText, doNotTrack = false) {
@@ -153,46 +143,9 @@ function sendMessageToUser(userId, messageText, doNotTrack = false) {
 }
 
 async function sendSurveyDataToGroupsFeed(survey) {
-  let messageDescription = '';
+  const userName = await getUserName(survey.userId);
 
-  messageDescription += `# Employee Survey Bot \n`;
-  messageDescription += `## Survey submitted for user: ${await getUserName(
-    survey.userId
-  )} \n`;
-  messageDescription += `Survey started: ${formatRelative(
-    survey.startDateTime,
-    new Date()
-  )} \n`;
-  messageDescription += `${
-    survey.messages && survey.messages.length > 0 ? survey.messages.length : '0'
-  } messages exchanged \n`;
-
-  messageDescription += '\n';
-
-  // todo sort messages first
-  if (survey.messages && survey.messages.length > 0) {
-    survey.messages.forEach((message) => {
-      if (message.type === MessageType.Outgoing) {
-        messageDescription += `❓ *${message.text}* \n`;
-      } else {
-        messageDescription += `✅ ${message.text}  \n`;
-      }
-      messageDescription += '\n';
-      messageDescription += '\n';
-    });
-  }
-
-  messageDescription += '\n';
-  messageDescription += '\n';
-
-  if (!survey.endDateTime) {
-    messageDescription += 'Survey has not been marked as finished  \n';
-  } else {
-    messageDescription += `Survey finished: ${formatRelative(
-      survey.endDateTime,
-      new Date()
-    )} \n`;
-  }
+  const messageDescription = survey.getMarkdownDescription(userName);
 
   const messageData = {
     formatting: 'MARKDOWN',
@@ -230,31 +183,11 @@ function sendSummaryToUser(survey) {
   callSendAPI(messageData, true);
 }
 
-function stopTrackingUserSurvey(survey) {
-  surveysTracked = surveysTracked.filter(
-    (trackedSurvey) => survey.id !== trackedSurvey.id
-  );
-  console.log(`Stopped tracking survey. ${survey.outputSurvey()}`);
-}
-
 app.get('/start/:user', (req, res) => {
   const userId = req.params.user;
   startSurveyAndFinishAnyOpenSurvey(userId);
   res.sendStatus(200);
 });
-
-function startSurveyAndFinishAnyOpenSurvey(userId) {
-  startSurvey(userId, true);
-}
-
-function startSurvey(userId, finishOpenSurvey) {
-  console.log('Start', userId);
-  if (finishOpenSurvey && finishOpenSurvey === true) {
-    finishAnyOpenSurvey(userId);
-  }
-  startTrackingNewUserSurvey(userId);
-  sendStartSurvey(userId);
-}
 
 /*
  * Use your own validation token. This can be any string. Check that the
@@ -346,8 +279,8 @@ function receivedPostback(event) {
  */
 function receivedMessage(event) {
   const senderID = event.sender.id;
-  trackReceivedMessage(event);
-  finishSurveyIfExitConditionsMet(event.sender.id);
+  surveyTrackingService.trackReceivedMessage(event);
+  finishSurveyIfExitConditionsMet(event.sender.id, FINAL_SURVEY_STAGE);
 
   const recipientID = event.recipient.id;
   const timeOfMessage = event.timestamp;
@@ -582,41 +515,6 @@ function sendSecondQuestion(recipientId) {
   callSendAPI(messageData);
 }
 
-function trackSentMessage(messageData) {
-  const userId = trimAndValidateUserId(messageData.recipient.id);
-  const messageText = messageData.message.text;
-  const trackedSurvey =
-    getCurrentlyTrackedSurveyByUserOrStartTrackingIfNoneFound(userId);
-  trackedSurvey.trackSentMessage(messageText, messageData.alias);
-  trackedSurvey.outputSurvey();
-}
-
-function trackReceivedMessage(event) {
-  const userId = trimAndValidateUserId(event.sender.id);
-  const { timestamp } = event;
-  const { id, text } = event.message;
-
-  const trackedSurvey =
-    getCurrentlyTrackedSurveyByUserOrStartTrackingIfNoneFound(userId);
-  trackedSurvey.trackReceivedMessage(id, timestamp, text);
-  trackedSurvey.outputSurvey();
-}
-
-function finishSurveyIfExitConditionsMet(userId) {
-  const parsedUserId = trimAndValidateUserId(userId);
-  const trackedSurvey =
-    getCurrentlyTrackedSurveyByUserOrStartTrackingIfNoneFound(parsedUserId);
-  const mostRecentReceivedMessage = trackedSurvey.getMostRecentMessage(
-    MessageType.Incoming
-  );
-  if (
-    mostRecentReceivedMessage &&
-    mostRecentReceivedMessage.alias === FINAL_SURVEY_STAGE
-  ) {
-    finishSurveyAndStopTracking(trackedSurvey);
-  }
-}
-
 /*
  * Call the Send API. The message data goes in the body. If successful, we'll
  * get the message id in a response
@@ -643,7 +541,7 @@ function callSendAPI(messageData, doNotTrack = false) {
             recipientId
           );
           if (!doNotTrack) {
-            trackSentMessage(messageData);
+            surveyTrackingService.trackSentMessage(messageData);
           }
         } else {
           console.log(
@@ -687,7 +585,7 @@ function sendMessageToGroupFeed(messageData) {
             messageId,
             recipientId
           );
-          trackSentMessage(messageData);
+          surveyTrackingService.trackSentMessage(messageData);
         } else {
           console.log(
             'Successfully called group feed API for recipient %s',
@@ -774,6 +672,8 @@ function setupPersistentMenuAndGetStartedButton() {
 app.listen(app.get('port'), () => {
   console.log('Node app is running on port', app.get('port'));
   setupPersistentMenuAndGetStartedButton();
+
+  console.log(`**${surveyTrackingService.getVersion()}**`);
 });
 
 module.exports = app;
