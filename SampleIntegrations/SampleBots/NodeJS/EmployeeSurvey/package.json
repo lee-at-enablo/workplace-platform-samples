@@ -4,7 +4,7 @@
   "description": "Employee Survey sample app for Work Chat",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js",
+    "start": "node src/app.js",
     "lint": "jshint --exclude node_modules .",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
