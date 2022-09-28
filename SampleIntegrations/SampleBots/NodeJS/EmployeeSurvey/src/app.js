@@ -97,8 +97,11 @@ function startSurveyAndFinishAnyOpenSurvey(userId) {
 
 function finishSurveyAndStopTracking(survey) {
   survey.finish();
-  sendSummaryToUser(survey);
-  sendSurveyDataToGroupsFeed(survey);
+
+  if (isFinalStageOfSurveyCompleted(survey)) {
+    sendSummaryToUser(survey);
+    sendSurveyDataToGroupsFeed(survey);
+  }
   surveyTrackingService.stopTrackingUserSurvey(survey);
 }
 
@@ -112,20 +115,22 @@ function finishAnyOpenSurvey(userId) {
   }
 }
 
-function finishSurveyIfExitConditionsMet(userId) {
-  const parsedUserId = surveyTrackingService.trimAndValidateUserId(userId);
-  const trackedSurvey =
-    surveyTrackingService.getCurrentlyTrackedSurveyByUserOrStartTrackingIfNoneFound(
-      parsedUserId
-    );
-  const mostRecentReceivedMessage = trackedSurvey.getMostRecentMessage(
+function isFinalStageOfSurveyCompleted(survey) {
+  const mostRecentReceivedMessage = survey.getMostRecentMessage(
     MessageType.Incoming
   );
-  if (
+  return (
     mostRecentReceivedMessage &&
     mostRecentReceivedMessage.alias === FINAL_SURVEY_STAGE
-  ) {
-    finishSurveyAndStopTracking(trackedSurvey);
+  );
+}
+
+function finishSurveyIfExitConditionsMet(userId) {
+  const survey = surveyTrackingService.getCurrentlyTrackedSurveyByUser(userId);
+  if (isFinalStageOfSurveyCompleted(survey)) {
+    if (survey) {
+      finishSurveyAndStopTracking(survey);
+    }
   }
 }
 
