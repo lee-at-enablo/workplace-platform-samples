@@ -718,10 +718,6 @@ function getUserName(userId) {
       (error, response, body) => {
         if (!error && response.statusCode == 200) {
           body = JSON.parse(body);
-          console.log(body);
-          console.log(body.name);
-          console.log(body.id);
-          console.log(body.email);
           resolve(body.name);
         }
         console.error(
