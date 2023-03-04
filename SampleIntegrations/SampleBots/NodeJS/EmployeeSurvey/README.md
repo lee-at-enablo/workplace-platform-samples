@@ -1,6 +1,6 @@
 # Employee Survey Sample App
 
-This example shows how you can use quick replies to send a lightweight employee survey to an employee. 
+This example shows how you can use quick replies to send a lightweight employee survey to an employee.
 
 Note: This sample app doesn't implement any data store; the implementation of storage is left to you.
 
@@ -11,3 +11,10 @@ To deploy this sample app, create a new [custom integration app](https://develop
 ## Usage
 
 To trigger a survey request for a specific user, make a `GET` request to `/start/{user_id}`. In a production deployment, you'll want to start survey requests for specific users at well-defined times, and track their responses so you can remind them or re-invite them later.
+
+## Upgrades as part of onboarding project - to be incorporated into readme
+
+Update all dependencies and run on Node 16
+Add prettier and eslint airbnb
+Add dotenv/env file support
+Add nodemon for local development

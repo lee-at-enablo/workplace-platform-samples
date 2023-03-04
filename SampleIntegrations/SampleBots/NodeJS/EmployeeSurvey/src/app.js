@@ -9,14 +9,25 @@
 
 /* jshint node: true, devel: true */
 
-'use strict';
+('use strict');
+
+const FINAL_SURVEY_STAGE = 'thankyou';
+const HAPPINESS_SURVEY_STAGE = 'happiness';
+const LONGEVITY_SURVEY_STAGE = 'longevity';
+const RESTART_SURVEY_PAYLOAD = 'RESTART_SURVEY';
+const GET_STARTED_PAYLOAD = 'GET_STARTED';
+const GROUP_ID_SEND_COMPLETED_SURVEY = '462913109217866';
 
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
 const express = require('express');
 const request = require('request');
+const SurveyTrackingService = require('./services/SurveyTrackingService');
+const MessageType = require('./messageType');
+require('dotenv').config();
 
 const app = express();
+const surveyTrackingService = new SurveyTrackingService();
 app.set('port', process.env.PORT || 5000);
 app.set('view engine', 'ejs');
 app.use(bodyParser.json({ verify: verifyRequestSignature }));
@@ -71,9 +82,115 @@ function verifyRequestSignature(req, res, buf) {
   }
 }
 
+function startSurvey(userId, finishOpenSurvey) {
+  console.log('Start', userId);
+  if (finishOpenSurvey && finishOpenSurvey === true) {
+    finishAnyOpenSurvey(userId);
+  }
+  surveyTrackingService.startTrackingNewUserSurvey(userId);
+  sendStartSurvey(userId);
+}
+
+function startSurveyAndFinishAnyOpenSurvey(userId) {
+  startSurvey(userId, true);
+}
+
+function finishSurveyAndStopTracking(survey) {
+  survey.finish();
+
+  if (isFinalStageOfSurveyCompleted(survey)) {
+    sendSummaryToUser(survey);
+    sendSurveyDataToGroupsFeed(survey);
+  }
+  surveyTrackingService.stopTrackingUserSurvey(survey);
+}
+
+function finishAnyOpenSurvey(userId) {
+  const parsedUserId = surveyTrackingService.trimAndValidateUserId(userId);
+
+  const currentlyTrackedSurvey =
+    surveyTrackingService.getCurrentlyTrackedSurveyByUser(parsedUserId);
+  if (currentlyTrackedSurvey) {
+    finishSurveyAndStopTracking(currentlyTrackedSurvey);
+  }
+}
+
+function isFinalStageOfSurveyCompleted(survey) {
+  const mostRecentReceivedMessage = survey.getMostRecentMessage(
+    MessageType.Incoming
+  );
+  return (
+    mostRecentReceivedMessage &&
+    mostRecentReceivedMessage.alias === FINAL_SURVEY_STAGE
+  );
+}
+
+function finishSurveyIfExitConditionsMet(userId) {
+  const survey = surveyTrackingService.getCurrentlyTrackedSurveyByUser(userId);
+  if (isFinalStageOfSurveyCompleted(survey)) {
+    if (survey) {
+      finishSurveyAndStopTracking(survey);
+    }
+  }
+}
+
+function sendMessageToUser(userId, messageText, doNotTrack = false) {
+  const messageData = {
+    recipient: {
+      id: userId,
+    },
+    message: {
+      text: messageText,
+    },
+  };
+
+  callSendAPI(messageData, doNotTrack);
+}
+
+async function sendSurveyDataToGroupsFeed(survey) {
+  const userName = await getUserName(survey.userId);
+
+  const messageDescription = survey.getMarkdownDescription(userName);
+
+  const messageData = {
+    formatting: 'MARKDOWN',
+    message: messageDescription,
+  };
+
+  // console.log(messageDescription);
+
+  sendMessageToGroupFeed(messageData);
+}
+
+function sendSummaryToUser(survey) {
+  const happinessReplies = survey.getMessagesByAliasAndType(
+    HAPPINESS_SURVEY_STAGE,
+    MessageType.Incoming
+  );
+  const longevityReplies = survey.getMessagesByAliasAndType(
+    LONGEVITY_SURVEY_STAGE,
+    MessageType.Incoming
+  );
+
+  const messageData = {
+    recipient: {
+      id: survey.userId,
+    },
+    message: {
+      text: `Thanks! Just so you know I was paying attention  - you said you were ${happinessReplies.map(
+        (message) => message.text
+      )} happy and wish to stay at the company for ${longevityReplies.map(
+        (message) => message.text
+      )}`,
+    },
+  };
+
+  callSendAPI(messageData, true);
+}
+
 app.get('/start/:user', (req, res) => {
-  console.log('Start', req.params.user);
-  sendStartSurvey(req.params.user);
+  const userId = req.params.user;
+  startSurveyAndFinishAnyOpenSurvey(userId);
   res.sendStatus(200);
 });
 
@@ -114,6 +231,8 @@ app.post('/webhook', (req, res) => {
       pageEntry.messaging.forEach((messagingEvent) => {
         if (messagingEvent.message) {
           receivedMessage(messagingEvent);
+        } else if (messagingEvent.postback) {
+          receivedPostback(messagingEvent);
         }
       });
     });
@@ -127,6 +246,35 @@ app.post('/webhook', (req, res) => {
 });
 
 /*
+ * Postback Event
+ *
+ * This event is called when a postback is tapped on a Structured Message.
+ * https://developers.facebook.com/docs/messenger-platform/webhook-reference/postback-received
+ *
+ */
+function receivedPostback(event) {
+  const senderID = event.sender.id;
+
+  // The 'payload' param is a developer-defined field which is set in a postback
+  // button for Structured Messages.
+  const { payload } = event.postback;
+  // Embed extra info int he payload in the format ACTION:OBJECT
+  const tokens = payload.split(':');
+  const action = tokens[0];
+
+  // When a postback is called, we'll send a message back to the sender to
+  // let them know it was successful
+  if (action === RESTART_SURVEY_PAYLOAD) {
+    startSurveyAndFinishAnyOpenSurvey(senderID);
+  }
+
+  if (action === GET_STARTED_PAYLOAD) {
+    sendMessageToUser(senderID, 'Thanks for choosing to get started!', true);
+    startSurveyAndFinishAnyOpenSurvey(senderID);
+  }
+}
+
+/*
  * Message Event
  *
  * This event is called when a message is sent to your page. The 'message'
@@ -136,6 +284,9 @@ app.post('/webhook', (req, res) => {
  */
 function receivedMessage(event) {
   const senderID = event.sender.id;
+  surveyTrackingService.trackReceivedMessage(event);
+  finishSurveyIfExitConditionsMet(event.sender.id, FINAL_SURVEY_STAGE);
+
   const recipientID = event.recipient.id;
   const timeOfMessage = event.timestamp;
   const { message } = event;
@@ -262,11 +413,12 @@ function sendDelaySurvey(recipientId) {
  */
 function sendThankYou(recipientId) {
   const messageData = {
+    alias: FINAL_SURVEY_STAGE,
     recipient: {
       id: recipientId,
     },
     message: {
-      text: 'Thanks for your feedback! If you have any other comments, write them below.',
+      text: 'Thanks for your feedback! Please provide some closing comments to complete the survey.',
     },
   };
 
@@ -279,11 +431,12 @@ function sendThankYou(recipientId) {
  */
 function sendFirstQuestion(recipientId) {
   const messageData = {
+    alias: HAPPINESS_SURVEY_STAGE,
     recipient: {
       id: recipientId,
     },
     message: {
-      text: "Between 1 and 5, where 5 is 'Very Happy', how happy are you working here?",
+      text: "Between 1 and 5, where 5 is 'Very Happy', how happy are you working here? Please choose one of the following options:",
       quick_replies: [
         {
           content_type: 'text',
@@ -310,6 +463,11 @@ function sendFirstQuestion(recipientId) {
           title: '5 😃',
           payload: 'HAPPY:5',
         },
+        {
+          content_type: 'text',
+          title: 'Other',
+          payload: 'HAPPY:Other',
+        },
       ],
     },
   };
@@ -323,11 +481,12 @@ function sendFirstQuestion(recipientId) {
  */
 function sendSecondQuestion(recipientId) {
   const messageData = {
+    alias: LONGEVITY_SURVEY_STAGE,
     recipient: {
       id: recipientId,
     },
     message: {
-      text: 'How long do you plan to stay in the company?',
+      text: 'How long do you plan to stay in the company? Please choose one of the following options:',
       quick_replies: [
         {
           content_type: 'text',
@@ -349,6 +508,11 @@ function sendSecondQuestion(recipientId) {
           title: '5+ years',
           payload: 'STAY:4',
         },
+        {
+          content_type: 'text',
+          title: 'Other',
+          payload: 'STAY:Other',
+        },
       ],
     },
   };
@@ -361,7 +525,7 @@ function sendSecondQuestion(recipientId) {
  * get the message id in a response
  *
  */
-function callSendAPI(messageData) {
+function callSendAPI(messageData, doNotTrack = false) {
   request(
     {
       baseUrl: GRAPH_API_BASE,
@@ -381,6 +545,9 @@ function callSendAPI(messageData) {
             messageId,
             recipientId
           );
+          if (!doNotTrack) {
+            surveyTrackingService.trackSentMessage(messageData);
+          }
         } else {
           console.log(
             'Successfully called Send API for recipient %s',
@@ -399,11 +566,140 @@ function callSendAPI(messageData) {
   );
 }
 
+/*
+ * Post to the /{group-id}/feed endpoint
+ *
+ */
+function sendMessageToGroupFeed(messageData) {
+  request(
+    {
+      baseUrl: GRAPH_API_BASE,
+      url: `/${GROUP_ID_SEND_COMPLETED_SURVEY}/feed`,
+      qs: { access_token: ACCESS_TOKEN },
+      method: 'POST',
+      json: messageData,
+    },
+    (error, response, body) => {
+      if (!error && response.statusCode == 200) {
+        const recipientId = body.recipient_id;
+        const messageId = body.message_id;
+
+        if (messageId) {
+          console.log(
+            'Successfully sent message with id %s to recipient %s',
+            messageId,
+            recipientId
+          );
+          surveyTrackingService.trackSentMessage(messageData);
+        } else {
+          console.log(
+            'Successfully called group feed API for recipient %s',
+            recipientId
+          );
+        }
+      } else {
+        console.error(
+          'Failed calling Group Feed API',
+          response.statusCode,
+          response.statusMessage,
+          body.error
+        );
+      }
+    }
+  );
+}
+
+function getUserName(userId) {
+  return new Promise((resolve, reject) => {
+    request(
+      {
+        baseUrl: GRAPH_API_BASE,
+        url: `/${userId}`,
+        qs: { access_token: ACCESS_TOKEN, fields: 'id, email, name, picture' },
+        method: 'GET',
+      },
+      (error, response, body) => {
+        if (!error && response.statusCode == 200) {
+          body = JSON.parse(body);
+          resolve(body.name);
+        }
+        console.error(
+          'Failed calling User API',
+          response.statusCode,
+          response.statusMessage,
+          body.error
+        );
+        reject(new Error('username unavailable'));
+      }
+    );
+  });
+}
+
+function setupPersistentMenuAndGetStartedButton() {
+  request(
+    {
+      baseUrl: GRAPH_API_BASE,
+      auth: { bearer: ACCESS_TOKEN },
+      url: '/me/messenger_profile',
+      method: 'POST',
+      qs: {
+        get_started: {
+          payload: GET_STARTED_PAYLOAD,
+        },
+        persistent_menu: [
+          {
+            locale: 'default',
+            composer_input_disabled: false,
+            call_to_actions: [
+              {
+                title: 'Restart Survey',
+                type: 'postback',
+                payload: RESTART_SURVEY_PAYLOAD,
+              },
+              {
+                type: 'web_url',
+                title: 'View Shifts',
+                url: 'https://andrew.tunnel.enablo.dev/view',
+                webview_height_ratio: 'compact',
+                messenger_extensions: true,
+              },
+              {
+                type: 'web_url',
+                title: 'Add Shifts',
+                url: 'https://andrew.tunnel.enablo.dev/add',
+                webview_height_ratio: 'compact',
+                messenger_extensions: true,
+              },
+              {
+                type: 'web_url',
+                title: 'Shift Management',
+                url: 'https://andrew.tunnel.enablo.dev/',
+                webview_height_ratio: 'compact',
+                messenger_extensions: true,
+              },
+            ],
+          },
+        ],
+      },
+    },
+    (error, response) => {
+      if (error) {
+        console.error(error);
+      } else {
+        console.log('setupPersistentMenu', response.body);
+      }
+    }
+  );
+}
+
 // Start server
 // Webhooks must be available via SSL with a certificate signed by a valid
 // certificate authority.
 app.listen(app.get('port'), () => {
   console.log('Node app is running on port', app.get('port'));
+  setupPersistentMenuAndGetStartedButton();
+
+  console.log(`**${surveyTrackingService.getVersion()}**`);
 });
 
 module.exports = app;
